@@ -1,9 +1,13 @@
 
 
+import 'dart:ui';
+
 import 'package:get/get.dart';
 import 'package:video_player/video_player.dart';
 
 
+import '../../core/constants/app_constants.dart';
+import '../../core/utils/assets_helper.dart';
 import '../../core/utils/logger.dart';
 import '../../domain/entities/instruction_entity.dart';
 import '../../domain/usecases/get_persisted_schedule_usecase.dart';
@@ -19,6 +23,9 @@ class VideoController extends GetxController {
   late VideoPlayerController videoController;
   late List<InstructionEntity> currentInstructions;
   late List<String> videoPlaylist = [];
+
+  VoidCallback? _videoListener;
+  bool _isAutoAdvancing = false;
 
   final isPlaying = false.obs;
   final isLoading = true.obs;
@@ -39,7 +46,8 @@ class VideoController extends GetxController {
       AppLogger.log('Starting app initialization');
 
       // Try to load from assets, fall back to persisted
-      currentInstructions = await loadScheduleUseCase('assets/video_instructions.json');
+      currentInstructions =
+          await loadScheduleUseCase('assets/${AppConstants.jsonFileName}');
 
       if (currentInstructions.isEmpty) {
         AppLogger.log('Checking persisted storage');
@@ -52,7 +60,7 @@ class VideoController extends GetxController {
       }
 
       AppLogger.log('Building playlist');
-      buildPlaylist();
+      await buildPlaylist();
 
       if (videoPlaylist.isEmpty) {
         throw Exception('Playlist is empty');
@@ -69,8 +77,9 @@ class VideoController extends GetxController {
     }
   }
 
-  void buildPlaylist() {
+  Future<void> buildPlaylist() async {
     videoPlaylist.clear();
+    final List<String> rawPlaylist = [];
 
     for (var instruction in currentInstructions) {
       if (instruction.type == 'update_schedule') {
@@ -79,19 +88,40 @@ class VideoController extends GetxController {
 
         for (var item in sortedPlaylist) {
           for (var filename in item.files) {
-            final videoPath = 'assets/videos/${item.folder}/$filename';
-            videoPlaylist.add(videoPath);
+            final videoPath =
+                '${AppConstants.videosPath}/${item.folder}/$filename';
+            rawPlaylist.add(videoPath);
 
             for (int i = 1; i < item.repeat; i++) {
-              videoPlaylist.add(videoPath);
+              rawPlaylist.add(videoPath);
             }
           }
         }
       }
     }
 
-    // Only log summary, not individual items
-    AppLogger.log('Playlist built: ${videoPlaylist.length} videos');
+    if (rawPlaylist.isEmpty) {
+      AppLogger.error('No videos found in schedule instructions');
+      return;
+    }
+
+    final validation = await AssetHelper.validatePlaylistAssets(rawPlaylist);
+    final missing = validation['missing'] as List<String>;
+
+    if (missing.isNotEmpty) {
+      AppLogger.error('Missing video files in playlist:');
+      for (final path in missing) {
+        AppLogger.error('  - $path');
+      }
+    }
+
+    videoPlaylist = rawPlaylist
+        .where((path) => !missing.contains(path))
+        .toList();
+
+    AppLogger.log(
+      'Playlist built: ${videoPlaylist.length} videos (total: ${validation['total']}, missing: ${missing.length})',
+    );
   }
 
   Future<void> initializeFirstVideo() async {
@@ -109,7 +139,8 @@ class VideoController extends GetxController {
         onTimeout: () => throw Exception('Video timeout'),
       );
 
-      await videoController.setLooping(true);
+      await videoController.setLooping(false);
+      _attachVideoListener();
       await play();
 
       AppLogger.success('Video ready');
@@ -144,12 +175,28 @@ class VideoController extends GetxController {
   Future<void> skipToNextVideo() async {
     try {
       try {
+        if (_videoListener != null) {
+          videoController.removeListener(_videoListener!);
+          _videoListener = null;
+        }
         await videoController.dispose();
       } catch (e) {
         // Silently handle dispose errors
       }
 
-      currentVideoIndex.value = (currentVideoIndex.value + 1) % videoPlaylist.length;
+      final nextIndex = currentVideoIndex.value + 1;
+      if (nextIndex >= videoPlaylist.length) {
+        // End of playlist
+        final shouldLoop = _isPlaylistRepeatAlways();
+        if (!shouldLoop) {
+          AppLogger.log('Reached end of playlist');
+          return;
+        }
+        currentVideoIndex.value = 0;
+      } else {
+        currentVideoIndex.value = nextIndex;
+      }
+
       final nextVideoPath = videoPlaylist[currentVideoIndex.value];
 
       videoController = VideoPlayerController.asset(nextVideoPath);
@@ -159,7 +206,8 @@ class VideoController extends GetxController {
         onTimeout: () => throw Exception('Video timeout'),
       );
 
-      await videoController.setLooping(true);
+      await videoController.setLooping(false);
+      _attachVideoListener();
       await play();
     } catch (e) {
       AppLogger.error('Skip error: $e');
@@ -167,9 +215,51 @@ class VideoController extends GetxController {
     }
   }
 
+  bool _isPlaylistRepeatAlways() {
+    for (final instruction in currentInstructions) {
+      if (instruction.type == 'update_schedule') {
+        return instruction.data.playlistRepeat == 'always';
+      }
+    }
+    // Default to always repeat if not specified
+    return true;
+  }
+
+  void _attachVideoListener() {
+    _videoListener = () {
+      final value = videoController.value;
+      if (!value.isInitialized) return;
+
+      if (_isAutoAdvancing) return;
+
+      if (value.duration == Duration.zero) return;
+
+      final position = value.position;
+      final duration = value.duration;
+
+      final isAtEnd =
+          !value.isPlaying && position >= duration && position != Duration.zero;
+
+      if (isAtEnd) {
+        _isAutoAdvancing = true;
+        skipToNextVideo().whenComplete(() {
+          _isAutoAdvancing = false;
+        });
+      }
+    };
+
+    if (_videoListener != null) {
+      videoController.addListener(_videoListener!);
+    }
+  }
+
   @override
   void onClose() {
     try {
+      if (_videoListener != null) {
+        videoController.removeListener(_videoListener!);
+        _videoListener = null;
+      }
       videoController.dispose();
     } catch (e) {
       // Silently handle
@@ -177,5 +267,4 @@ class VideoController extends GetxController {
     super.onClose();
   }
 }
-
 
