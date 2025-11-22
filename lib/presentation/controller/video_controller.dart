@@ -105,6 +105,14 @@ class VideoController extends GetxController {
       return;
     }
 
+    // Build the playlist directly from the schedule so we never
+    // accidentally drop valid videos (e.g. video2) due to a
+    // false-negative in asset validation on some platforms.
+    videoPlaylist = rawPlaylist;
+
+    // Optional: still log diagnostics about missing assets, but do not
+    // filter them out of the playlist. If an asset is truly missing,
+    // playback of that item will fail and be visible in logs.
     final validation = await AssetHelper.validatePlaylistAssets(rawPlaylist);
     final missing = validation['missing'] as List<String>;
 
@@ -115,12 +123,8 @@ class VideoController extends GetxController {
       }
     }
 
-    videoPlaylist = rawPlaylist
-        .where((path) => !missing.contains(path))
-        .toList();
-
     AppLogger.log(
-      'Playlist built: ${videoPlaylist.length} videos (total: ${validation['total']}, missing: ${missing.length})',
+      'Playlist built from schedule: ${videoPlaylist.length} videos (configured: ${validation['total']}, missing: ${missing.length})',
     );
   }
 
@@ -241,14 +245,12 @@ class VideoController extends GetxController {
 
       final position = value.position;
 
-      // Allow a small tolerance so we still advance if the position is
-      // a bit smaller than duration due to rounding.
+      // Treat the video as "ended" once we reach (or are extremely close to)
+      // the end of the duration. Relying only on `isPlaying` can be
+      // unreliable on some platforms, which can prevent advancing to the
+      // next video.
       const tolerance = Duration(milliseconds: 500);
-      final isNearEnd = position + tolerance >= duration;
-
-      // We consider the video "ended" when it is no longer playing and the
-      // current position is at (or very near) the end.
-      final isAtEnd = !value.isPlaying && isNearEnd;
+      final isAtEnd = position >= duration - tolerance;
 
       if (isAtEnd) {
         _isAutoAdvancing = true;
