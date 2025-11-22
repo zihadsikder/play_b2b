@@ -45,7 +45,7 @@ class VideoController extends GetxController {
 
       AppLogger.log('Starting app initialization');
 
-      // Try to load from assets, fall back to persisted
+
       currentInstructions =
           await loadScheduleUseCase('assets/${AppConstants.jsonFileName}');
 
@@ -218,10 +218,13 @@ class VideoController extends GetxController {
   bool _isPlaylistRepeatAlways() {
     for (final instruction in currentInstructions) {
       if (instruction.type == 'update_schedule') {
-        return instruction.data.playlistRepeat == 'always';
+        // Be tolerant of different capitalizations and unknown values
+        final repeat = instruction.data.playlistRepeat.toLowerCase().trim();
+        return repeat == 'always';
       }
     }
-    // Default to always repeat if not specified
+
+    // If no explicit instruction is found, default to looping
     return true;
   }
 
@@ -230,15 +233,22 @@ class VideoController extends GetxController {
       final value = videoController.value;
       if (!value.isInitialized) return;
 
+      // Prevent re-entrancy while we are already auto-advancing
       if (_isAutoAdvancing) return;
 
-      if (value.duration == Duration.zero) return;
+      final duration = value.duration;
+      if (duration == Duration.zero) return;
 
       final position = value.position;
-      final duration = value.duration;
 
-      final isAtEnd =
-          !value.isPlaying && position >= duration && position != Duration.zero;
+      // Allow a small tolerance so we still advance if the position is
+      // a bit smaller than duration due to rounding.
+      const tolerance = Duration(milliseconds: 500);
+      final isNearEnd = position + tolerance >= duration;
+
+      // We consider the video "ended" when it is no longer playing and the
+      // current position is at (or very near) the end.
+      final isAtEnd = !value.isPlaying && isNearEnd;
 
       if (isAtEnd) {
         _isAutoAdvancing = true;
@@ -262,7 +272,7 @@ class VideoController extends GetxController {
       }
       videoController.dispose();
     } catch (e) {
-      // Silently handle
+      // Silently handle dispose errors
     }
     super.onClose();
   }

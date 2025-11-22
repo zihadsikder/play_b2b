@@ -3,7 +3,7 @@
 import 'package:flutter/services.dart';
 import '../../core/utils/logger.dart';
 class AssetHelper {
-  // Check if a specific asset exists
+  /// Check if a specific asset exists
   static Future<bool> assetExists(String assetPath) async {
     try {
       await rootBundle.load(assetPath);
@@ -13,7 +13,7 @@ class AssetHelper {
     }
   }
 
-  // Validate playlist assets
+  /// Validate playlist assets
   static Future<Map<String, Object>> validatePlaylistAssets(
       List<String> videoPath,
       ) async {
@@ -37,7 +37,7 @@ class AssetHelper {
   }
 
 
-  // Log asset diagnostics
+  /// Log asset diagnostics
   static Future<void> logAssetDiagnostics(List<String> videoPath) async {
     AppLogger.log('=== ASSET DIAGNOSTICS ===');
     final validation = await validatePlaylistAssets(videoPath);
